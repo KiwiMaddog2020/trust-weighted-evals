@@ -1,0 +1,64 @@
+{
+  "_comment": "Trio trust-model config (single source of truth). Read by adjudicator/trio_adjudicate.py. A re-weight is a one-line edit here.",
+
+  "_domain_comment": "DOMAIN-AWARE policy. The top-level weights/sensitive_min_weight stay the flat GENERAL default so every existing reader works unchanged. The domains{} map adds per-domain tables (weights + fleet ratio + per-engine role). Pick a domain by classifying the subject (CSS/HTML/templates/visual => ui; else general) or an explicit --domain ui. One-line-editable: each engine's weight/ratio/role is a single JSON line.",
+
+  "weights": {
+    "claude": 9,
+    "codex": 8.5,
+    "gemini": 8
+  },
+  "sensitive_min_weight": 8.5,
+
+  "default_domain": "general",
+
+  "fleet": {
+    "max_workers": 4,
+    "per_engine_ceiling": 2
+  },
+
+  "engines": {
+    "claude": {
+      "engine": "in-session Claude + Agent subagents",
+      "spawn": "in-session",
+      "sensitive_ok": true
+    },
+    "codex": {
+      "engine": "Codex 5.5",
+      "spawn": "bin/codex-spawn.sh",
+      "mode": "fast mode default, priority tier",
+      "sensitive_ok": true
+    },
+    "gemini": {
+      "engine": "Gemini (best model, user on Pro)",
+      "spawn_author": "bin/gemini-spawn.sh (non-sensitive only)",
+      "spawn_review": "bin/gemini-review.sh (read-only)",
+      "sensitive_ok": false
+    }
+  },
+
+  "domains": {
+    "general": {
+      "_about": "GENERAL/code domain. Codex = many-agent workhorse author (fast mode + priority tier); Gemini = READ-ONLY checkpoint auditor only; Opus = adjudicator/merger + author.",
+      "weights": { "claude": 9, "codex": 8.5, "gemini": 8 },
+      "sensitive_min_weight": 8.5,
+      "fleet_ratio": { "claude": 0.45, "codex": 0.4, "gemini": 0.15 },
+      "roles": {
+        "claude": "adjudicator/merger + author",
+        "codex": "many-agent workhorse author (fast mode + priority tier)",
+        "gemini": "read-only checkpoint auditor only"
+      }
+    },
+    "ui": {
+      "_about": "UI/design domain. Gemini = first-class design author AND reviewer (leveraged OVER Codex); Codex = code-correctness (markup/logic/a11y); Opus = adjudicator/merger.",
+      "weights": { "claude": 9, "gemini": 8.5, "codex": 7.5 },
+      "sensitive_min_weight": 8.5,
+      "fleet_ratio": { "claude": 0.45, "codex": 0.25, "gemini": 0.3 },
+      "roles": {
+        "claude": "adjudicator/merger",
+        "gemini": "first-class design author AND reviewer (leveraged over Codex)",
+        "codex": "code-correctness (markup/logic/a11y)"
+      }
+    }
+  }
+}

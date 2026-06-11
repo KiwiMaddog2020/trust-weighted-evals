@@ -1,0 +1,166 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Peer-audit state",
+  "description": "Per-audit state file written to <target-dir>/.peer-audit-<slug>.json. Tracks pass history, per-rater scores, findings, and convergence status for the peer-audit skill and its N-rater generalization (Triad). The rater set is open: any number of named engines (opus/codex/gemini/...) may participate, recorded under a `raters` map keyed by engine name. The two-rater (codex+claude) shape stays valid: legacy per-pass `codex`/`claude` blocks are still accepted, and a reader may mirror them into the `raters` map.",
+  "type": "object",
+  "required": [
+    "slug",
+    "subject",
+    "mode",
+    "target_dir",
+    "current_pass",
+    "max_passes",
+    "convergence",
+    "history"
+  ],
+  "properties": {
+    "slug": {
+      "type": "string",
+      "description": "Kebab-case slug derived from subject. Used in filenames."
+    },
+    "subject": {
+      "type": "string",
+      "description": "Human-readable subject string. Echoed in prompts."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["plan", "code"],
+      "description": "Which prompt template was used."
+    },
+    "target_dir": {
+      "type": "string",
+      "description": "Directory (repo-relative) where all artifacts land."
+    },
+    "current_pass": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Most recently fired pass number."
+    },
+    "max_passes": {
+      "type": "integer",
+      "default": 5,
+      "description": "Hard ceiling; if exceeded, Phase 5 fires with DID-NOT-CONVERGE."
+    },
+    "raters": {
+      "type": "array",
+      "description": "The engines participating in this audit, in display order. For the classic two-rater peer-audit this is ['codex','claude']; for Triad it is e.g. ['opus','codex','gemini']. Engine names are lowercase tokens. The convergence gate requires EVERY name in this list to hit GO + target on the last pass. If absent (legacy 2-rater state), readers fall back to ['codex','claude'].",
+      "items": { "type": "string" },
+      "default": ["codex", "claude"]
+    },
+    "convergence": {
+      "type": "object",
+      "required": ["target_craft", "target_fit"],
+      "description": "Convergence target + status. target_craft/target_fit are STORED USER VALUES (the bar the user set when launching the audit), not literals baked into the scripts — the gate reads them from here.",
+      "properties": {
+        "target_craft": {
+          "type": "number",
+          "default": 9.5,
+          "description": "User-set craft bar every rater must meet to converge."
+        },
+        "target_fit": {
+          "type": "number",
+          "default": 9.5,
+          "description": "User-set fit bar every rater must meet to converge."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "converged", "plateau", "did_not_converge"],
+          "default": "pending"
+        },
+        "last_reasoning": {
+          "type": "string",
+          "description": "Human-readable explanation of the last convergence decision."
+        }
+      }
+    },
+    "codex_binary": {
+      "type": ["string", "null"],
+      "description": "Path to codex CLI if detected, null if paste-mode."
+    },
+    "history": {
+      "type": "array",
+      "description": "Append-only per-pass record. Each entry carries a `raters` map keyed by engine name. For backward compatibility the classic flat `codex`/`claude` blocks are also accepted and, when present, are mirrored into the `raters` map by update_state.py.",
+      "items": {
+        "type": "object",
+        "required": ["pass", "fired_at"],
+        "properties": {
+          "pass": { "type": "integer" },
+          "fired_at": { "type": "string", "format": "date-time" },
+          "raters": {
+            "type": "object",
+            "description": "Map of engine-name -> per-rater result for this pass. Replaces the hardcoded codex/claude keys; an arbitrary number of engines is allowed.",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "output_path": { "type": "string" },
+                "verdict": {
+                  "type": ["string", "null"],
+                  "enum": [
+                    "GO",
+                    "GATED-GO",
+                    "NO-GO",
+                    "CONVERGED",
+                    "PLATEAU",
+                    "DID-NOT-CONVERGE",
+                    null
+                  ]
+                },
+                "craft": { "type": ["number", "null"] },
+                "fit": { "type": ["number", "null"] },
+                "completed_at": { "type": "string", "format": "date-time" }
+              }
+            }
+          },
+          "codex": {
+            "type": "object",
+            "description": "LEGACY 2-rater block. Still written alongside `raters['codex']` for backward compatibility so old readers (and the classic peer-audit) keep working.",
+            "properties": {
+              "output_path": { "type": "string" },
+              "verdict": {
+                "type": ["string", "null"],
+                "enum": ["GO", "GATED-GO", "NO-GO", "CONVERGED", null]
+              },
+              "craft": { "type": "number" },
+              "fit": { "type": "number" },
+              "completed_at": { "type": "string", "format": "date-time" }
+            }
+          },
+          "claude": {
+            "type": "object",
+            "description": "LEGACY 2-rater block. Still written alongside `raters['claude']` for backward compatibility.",
+            "properties": {
+              "output_path": { "type": "string" },
+              "verdict": {
+                "type": ["string", "null"],
+                "enum": ["GO", "GATED-GO", "NO-GO", "CONVERGED", null]
+              },
+              "craft": { "type": "number" },
+              "fit": { "type": "number" },
+              "completed_at": { "type": "string", "format": "date-time" }
+            }
+          },
+          "new_findings": { "type": "integer", "minimum": 0 },
+          "patches_applied": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "open_findings": {
+      "type": "array",
+      "description": "Findings carried into the next pass. Train 8 removed the unused `id` field from `required` to match what parse_polish_output.py actually emits and what update_state.py writes into live state.",
+      "items": {
+        "type": "object",
+        "required": ["severity", "location", "summary", "introduced_on_pass", "introduced_by"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"] },
+          "location": { "type": "string", "description": "file:line" },
+          "summary": { "type": "string" },
+          "introduced_on_pass": { "type": "integer" },
+          "introduced_by": {
+            "type": "string",
+            "description": "Engine name that introduced the finding (codex/claude/gemini/...)."
+          }
+        }
+      }
+    }
+  }
+}

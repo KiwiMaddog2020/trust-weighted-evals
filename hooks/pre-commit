@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+# Privacy and secret guard: blocks a commit whose staged additions contain
+# obvious secrets or PII. A backstop, not a guarantee, you are responsible
+# regardless. Activate once per clone with:
+#   git config core.hooksPath hooks
+# Verify it is active with:
+#   git config --get core.hooksPath   # should print: hooks
+#
+# Coverage: this gate catches secrets (private keys, AWS and Slack tokens,
+# GitHub, Google, OpenAI, and Stripe API tokens, JWT and bearer tokens, generic
+# api/secret/token/password and api-key literals, credentials in URLs), email
+# addresses, formatted North American phone numbers, Luhn-valid SIN-shaped
+# numbers, and Luhn-valid payment-card numbers.
+# It does NOT detect postal or street addresses, account or customer IDs, IP
+# addresses, geolocation, dates of birth, or free-text names.
+# A clean pass is not proof those are absent; read your diff, and run
+# /privacy-check for the wider review.
+# Known soft edge: a Luhn-valid card buried inside a single digit run longer
+# than 19 is not flagged (see the card scanner note below). See
+# .claude/protocols/privacy.md.
+#
+# Allowlist: a staged line containing the token "pragma: allowlist" is skipped.
+# Use it on documentation that must show an example pattern (like the card in the
+# comment below), so the gate does not block a commit of its own examples.
+# WARNING: the skip is line-global. The whole physical line is waved through, so a
+# real secret sitting on the SAME line as the token is also skipped silently. Use
+# the marker only on a line that holds an example and nothing sensitive, and put
+# the token "pragma: allowlist" at the END of that line.
+set -uo pipefail
+
+# A literal newline, assigned standalone so the ANSI-C quote expands. Used to join
+# the grep, card, and SIN hit streams below. Do NOT inline $'\n' inside a
+# ${var:+...} expansion: macOS system bash (3.2) does not expand the ANSI-C quote
+# in that position and inserts the four literal characters $'\n' instead, which
+# merges two hits onto one line and drops all but the first from the summary.
+nl=$'\n'
+
+# Capture the raw added lines first (staged additions, minus the +++ file header),
+# before the allowlist filter. Then count how many carry the pragma marker, and
+# derive the filtered "added" set the matchers actually scan. Splitting it this way
+# lets the skip announce itself: a line-global skip that says nothing can wave a
+# real secret through unseen.
+raw_added="$(git diff --cached -U0 --diff-filter=ACM | grep -E '^\+' | grep -vE '^\+\+\+' || true)"
+# grep -c prints a count and exits non-zero on no match; guard with || true so a
+# zero-match (or empty input) does not abort under set -uo pipefail on bash 3.2.
+skipped_count="$(printf '%s\n' "$raw_added" | grep -cF 'pragma: allowlist' || true)"
+[ -z "$skipped_count" ] && skipped_count=0
+added="$(printf '%s\n' "$raw_added" | grep -vF 'pragma: allowlist' || true)"
+# Non-silent skip: print a count-only notice to stderr (never the line contents).
+# This does not touch any exit code below. A real unmarked secret still blocks, a
+# clean commit still exits 0, an allowlisted-only commit still passes but is now
+# announced here.
+if [ "$skipped_count" -gt 0 ]; then
+  echo "pre-commit: ${skipped_count} line(s) skipped via pragma: allowlist, review them before pushing" >&2
+fi
+[ -z "$added" ] && exit 0
+
+# High-confidence secrets plus clear PII. Standalone matchers (GitHub, Google,
+# OpenAI, and Stripe tokens, email, URL credential, JWT, bearer token, SIN)
+# catch shapes that no keyword precedes; the keyword clause catches generic
+# api/secret/token/password and api-key literals. The SIN clause (the awk pass
+# below) matches any nine-digit run with at most one space or dash between
+# adjacent digits, regardless of how the digits group, so it is intentionally a
+# superset of the strict 3-3-3 SIN regex in .claude/skills/privacy-check/SKILL.md
+# (a 2-4-3 split that the skill regex would reject still trips the hook). It is
+# Luhn-validated (a SIN's ninth digit is a Luhn check digit) so ordinary
+# nine-digit content like a budget or a ticket id does not over-block. A real
+# SIN stays caught because it is Luhn-valid by construction. The over-catch is
+# safe: it only ever blocks a Luhn-valid nine-digit run. Redact or use a
+# synthetic value to clear a hit.
+pat='-----BEGIN [A-Z ]*PRIVATE KEY-----'
+pat="$pat"'|AKIA[0-9A-Z]{16}'
+pat="$pat"'|xox[baprs]-[0-9A-Za-z-]{10,}'
+pat="$pat"'|gh[pousr]_[0-9A-Za-z]{30,}'              # ghp_/gho_/ghu_/ghs_/ghr_... pragma: allowlist
+pat="$pat"'|github_pat_[0-9A-Za-z_]{20,}'            # github_pat_ fine-grained token pragma: allowlist
+pat="$pat"'|AIza[0-9A-Za-z_-]{30,}'                  # AIzaSyEXAMPLEEXAMPLEEXAMPLEEXAMPLE pragma: allowlist
+pat="$pat"'|(sk|rk)_(live|test)_[0-9A-Za-z]{16,}'    # sk_live_/rk_live_ EXAMPLE16 pragma: allowlist
+pat="$pat"'|sk-[A-Za-z0-9_-]{20,}'                   # sk-EXAMPLEEXAMPLEEXAMPLE pragma: allowlist
+pat="$pat"'|(api|secret|token|password|api[_-]?key)[_a-z-]*["'\'' ]*[:=]["'\'' ]*[A-Za-z0-9/+_-]{16,}'
+pat="$pat"'|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
+pat="$pat"'|[a-z][a-z0-9+.-]*://[^:/@[:space:]]+:[^@/[:space:]]+@'
+pat="$pat"'|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'
+pat="$pat"'|[Bb]earer[[:space:]]+[A-Za-z0-9._-]{20,}'
+# Conservative North American phone. Requires separators or a +1/1 country code
+# between the 3-3-4 groups, so a separated or +1-prefixed number is caught but a
+# bare ten-digit id (no separators) is not, mirroring the SIN recall reasoning.
+pat="$pat"'|(\+?1[-. ]?)?\(?[0-9]{3}\)?[-. ][0-9]{3}[-. ][0-9]{4}'   # 604-555-0142 / +1 (778) 555-0199; pragma: allowlist
+# SIN is intentionally NOT in this grep pattern. A bare nine-digit run is too
+# common in ordinary BA content (budgets, ticket ids, build numbers) to block on
+# shape alone, so SIN is matched in the Luhn-validated awk pass below instead.
+
+hits="$(printf '%s\n' "$added" | grep -nEi -e "$pat" || true)"
+
+card_hits="$(printf '%s\n' "$added" | awk '
+  function luhn(s,    i, d, sum, dbl) {
+    sum = 0
+    dbl = 0
+    for (i = length(s); i > 0; i--) {
+      d = substr(s, i, 1) + 0
+      if (dbl) {
+        d *= 2
+        if (d > 9) d -= 9
+      }
+      sum += d
+      dbl = !dbl
+    }
+    return sum % 10 == 0
+  }
+  {
+    line = $0
+    for (start = 1; start <= length(line); start++) {
+      c = substr(line, start, 1)
+      if (c !~ /[0-9]/) continue
+      candidate = c
+      digits = c
+      last_was_sep = 0
+      for (pos = start + 1; pos <= length(line); pos++) {
+        c = substr(line, pos, 1)
+        if (c ~ /[0-9]/) {
+          candidate = candidate c
+          digits = digits c
+          last_was_sep = 0
+        } else if ((c == " " || c == "-") && !last_was_sep) {
+          candidate = candidate c
+          last_was_sep = 1
+        } else {
+          break
+        }
+        # Stop this candidate once it passes the longest card length. Known soft
+        # edge: a valid 13-19 digit card sitting inside a single uninterrupted
+        # run longer than 19 digits is not isolated here, and every sub-window of
+        # such a run is flanked by digits and so fails the standalone-number
+        # guard below anyway. Flagging those would require dropping that guard,
+        # which would over-block ordinary long numeric ids, so it is left as a
+        # documented recall boundary rather than fixed. A normally formatted card
+        # (grouped, or flanked by non-digits) is still caught.
+        if (length(digits) > 19) break
+      }
+      # If the scan swallowed a trailing separator (a space or dash that turned out
+      # to sit AFTER the last digit group, e.g. "4111 1111 1111 1111 exp"; pragma: allowlist), roll pos
+      # back one so that separator is treated as the post-number boundary, not part
+      # of the number run. Without this, a grouped card number followed by a space
+      # and more text leaves last_was_sep set and silently clears the check below,
+      # so only an unspaced run or a number at end-of-line would ever be caught.
+      if (last_was_sep) { pos--; last_was_sep = 0 }
+      if (length(digits) >= 13 && length(digits) <= 19 && !last_was_sep) {
+        prev = start > 1 ? substr(line, start - 1, 1) : ""
+        prev2 = start > 2 ? substr(line, start - 2, 1) : ""
+        nextc = pos <= length(line) ? substr(line, pos, 1) : ""
+        next2 = pos < length(line) ? substr(line, pos + 1, 1) : ""
+        if (prev !~ /[0-9]/ && nextc !~ /[0-9]/ &&
+            !(prev ~ /[ -]/ && prev2 ~ /[0-9]/) &&
+            !(nextc ~ /[ -]/ && next2 ~ /[0-9]/) &&
+            luhn(digits)) {
+          printf "%d:possible payment card\n", NR
+          next
+        }
+      }
+    }
+  }' || true)"
+
+# SIN pass. A SIN's ninth digit is a Luhn check digit, so requiring luhn(digits)
+# clears the common false positives (a 100000000 budget, a 123456789 ticket id,
+# a 100200300 build number are all Luhn-invalid) at zero recall cost: a genuine
+# SIN is Luhn-valid by construction. The matched shape is any nine-digit run with
+# at most one space or dash between adjacent digits, regardless of grouping, and
+# not part of a longer digit run. That is broader than a strict 3-3-3 form (a
+# 2-4-3 split like "04 6454 286" trips it too), so it is a deliberate superset of  pragma: allowlist
+# the 3-3-3 SIN regex in .claude/skills/privacy-check/SKILL.md; the Luhn gate is
+# what keeps the wider net from over-blocking.
+sin_hits="$(printf '%s\n' "$added" | awk '
+  function luhn(s,    i, d, sum, dbl) {
+    sum = 0
+    dbl = 0
+    for (i = length(s); i > 0; i--) {
+      d = substr(s, i, 1) + 0
+      if (dbl) {
+        d *= 2
+        if (d > 9) d -= 9
+      }
+      sum += d
+      dbl = !dbl
+    }
+    return sum % 10 == 0
+  }
+  {
+    line = $0
+    for (start = 1; start <= length(line); start++) {
+      c = substr(line, start, 1)
+      if (c !~ /[0-9]/) continue
+      prev = start > 1 ? substr(line, start - 1, 1) : ""
+      if (prev ~ /[0-9]/) continue
+      digits = c
+      last_was_sep = 0
+      for (pos = start + 1; pos <= length(line); pos++) {
+        c = substr(line, pos, 1)
+        if (c ~ /[0-9]/) {
+          digits = digits c
+          last_was_sep = 0
+        } else if ((c == " " || c == "-") && !last_was_sep && length(digits) < 9) {
+          last_was_sep = 1
+        } else {
+          break
+        }
+        if (length(digits) > 9) break
+      }
+      if (last_was_sep) pos--
+      nextc = pos <= length(line) ? substr(line, pos, 1) : ""
+      if (length(digits) == 9 && nextc !~ /[0-9]/ && luhn(digits)) {
+        printf "%d:possible SIN\n", NR
+        next
+      }
+    }
+  }' || true)"
+
+if [ -n "$card_hits" ]; then
+  hits="${hits}${hits:+$nl}${card_hits}"
+fi
+if [ -n "$sin_hits" ]; then
+  hits="${hits}${hits:+$nl}${sin_hits}"
+fi
+
+if [ -n "$hits" ]; then
+  {
+    echo "pre-commit: possible secret or PII in staged changes. Commit blocked."
+    echo "Redact, use a synthetic value, or move secrets to a secret store, then re-stage."
+    echo "Run /privacy-check for a full review. Do not bypass with --no-verify."
+    # Report a match ordinal and a category, never the matched bytes: the block
+    # message can be pasted into chat or a log, so it must not carry the value it
+    # just caught (a hyphen-split SIN, for example, would survive a naive
+    # redaction). The number is the position in the concatenated stream of added
+    # lines, NOT a file line number, so it is labeled "match #N" rather than
+    # "line N" to avoid pointing at a line that does not exist. Read the staged
+    # diff or run /privacy-check to locate the category named here.
+    printf '%s\n' "$hits" | awk '
+      {
+        n = $0; sub(/:.*/, "", n)
+        v = $0; sub(/^[0-9]+:/, "", v)
+        cat = "possible secret or PII"
+        if      (v ~ /-----BEGIN [A-Z ]*PRIVATE KEY-----/)                     cat = "possible private key"
+        else if (v ~ /AKIA[0-9A-Z]{16}/)                                       cat = "possible AWS access key"
+        else if (v ~ /xox[baprs]-[0-9A-Za-z-]{10,}/)                           cat = "possible Slack token"
+        else if (v ~ /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/)      cat = "possible JWT"
+        else if (v ~ /[Bb]earer[[:space:]]+[A-Za-z0-9._-]{20,}/)               cat = "possible bearer token"
+        else if (v ~ /[a-z][a-z0-9+.-]*:\/\/[^:\/@[:space:]]+:[^@\/[:space:]]+@/) cat = "possible credential in URL"
+        # Token shapes must be tested before the SIN/credential branches: a 9-digit
+        # run inside a token (a github_pat_ value, for example) or a keyword in the
+        # surrounding text would otherwise mislabel a real key fix.
+        else if (v ~ /gh[pousr]_[0-9A-Za-z]{30,}/)                             cat = "possible API token"
+        else if (v ~ /github_pat_[0-9A-Za-z_]{20,}/)                           cat = "possible API token"
+        else if (v ~ /AIza[0-9A-Za-z_-]{30,}/)                                 cat = "possible API token"
+        else if (v ~ /(sk|rk)_(live|test)_[0-9A-Za-z]{16,}/)                   cat = "possible API token"
+        else if (v ~ /sk-[A-Za-z0-9_-]{20,}/)                                  cat = "possible API token"
+        else if (v ~ /([Aa][Pp][Ii]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Aa][Pp][Ii][_-]?[Kk][Ee][Yy])[_a-zA-Z-]*["'\'' ]*[:=]["'\'' ]*[A-Za-z0-9\/+_-]{16,}/) cat = "possible API token"
+        else if (v ~ /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/)         cat = "possible email address"
+        else if (v ~ /(\+?1[-. ]?)?\(?[0-9]{3}\)?[-. ][0-9]{3}[-. ][0-9]{4}/)  cat = "possible phone number"
+        else if (v ~ /possible SIN/)                                           cat = "possible SIN"
+        else if (v ~ /possible payment card/)                                  cat = "possible payment card"
+        else if (v ~ /[Aa][Pp][Ii]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]/) cat = "possible credential"
+        printf "  match #%s: %s\n", n, cat
+      }'
+  } >&2
+  exit 1
+fi
+exit 0
