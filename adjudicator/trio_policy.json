@@ -1,7 +1,9 @@
 {
-  "_comment": "Trio trust-model config (single source of truth). Read by adjudicator/trio_adjudicate.py. A re-weight is a one-line edit here.",
+  "_comment": "Trio trust-model config (single source of truth). Read by bin/lib/trio_policy.sh (shell) and bin/lib/trio_adjudicate.py (python). A re-weight is a one-line edit here. Spec: docs/TRIO_TRUST_MODEL_2026-06-03.md.",
 
-  "_domain_comment": "DOMAIN-AWARE policy. The top-level weights/sensitive_min_weight stay the flat GENERAL default so every existing reader works unchanged. The domains{} map adds per-domain tables (weights + fleet ratio + per-engine role). Pick a domain by classifying the subject (CSS/HTML/templates/visual => ui; else general) or an explicit --domain ui. One-line-editable: each engine's weight/ratio/role is a single JSON line.",
+  "_domain_comment": "DOMAIN-AWARE policy (Kevin-locked). The top-level weights/sensitive_min_weight stay the flat GENERAL default so every existing reader works unchanged. The domains{} map adds per-domain tables (weights + fleet ratio + per-engine role). Pick a domain by classifying the subject (CSS/HTML/templates/visual => ui; else general) or an explicit --domain ui. One-line-editable: each engine's weight/ratio/role is a single JSON line.",
+
+  "_guard_comment": "T0 guard rail (WEIGHTS_PLAN_REVIEW_2026-06-12): this file is tier3 + a gate file. AUTHORITY IS DECLARED, NOT DERIVED: sensitive_authors lists who may first-pass tier3 work and adjudicator names the deciding family, so weight movement alone can never grant or revoke either seat. Both readers clamp: non-adjudicator weights stay strictly below the adjudicator's; declared sensitive_authors stay floored at sensitive_min_weight.",
 
   "weights": {
     "claude": 9,
@@ -9,6 +11,8 @@
     "gemini": 8
   },
   "sensitive_min_weight": 8.5,
+  "adjudicator": "claude",
+  "sensitive_authors": ["claude", "codex"],
 
   "default_domain": "general",
 
@@ -42,6 +46,7 @@
       "_about": "GENERAL/code domain. Codex = many-agent workhorse author (fast mode + priority tier); Gemini = READ-ONLY checkpoint auditor only; Opus = adjudicator/merger + author.",
       "weights": { "claude": 9, "codex": 8.5, "gemini": 8 },
       "sensitive_min_weight": 8.5,
+      "sensitive_authors": ["claude", "codex"],
       "fleet_ratio": { "claude": 0.45, "codex": 0.4, "gemini": 0.15 },
       "roles": {
         "claude": "adjudicator/merger + author",
@@ -53,6 +58,7 @@
       "_about": "UI/design domain. Gemini = first-class design author AND reviewer (leveraged OVER Codex); Codex = code-correctness (markup/logic/a11y); Opus = adjudicator/merger.",
       "weights": { "claude": 9, "gemini": 8.5, "codex": 7.5 },
       "sensitive_min_weight": 8.5,
+      "sensitive_authors": ["claude"],
       "fleet_ratio": { "claude": 0.45, "codex": 0.25, "gemini": 0.3 },
       "roles": {
         "claude": "adjudicator/merger",

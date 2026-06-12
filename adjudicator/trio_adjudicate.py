@@ -4,20 +4,25 @@ The Trio runs three review engines at trust weights (Opus/Claude 9, Codex 8.5,
 Gemini 8). After the author + the duet's cross-model pass, Gemini adds a third,
 diverse-lineage review. This module decides what to DO with the pooled findings.
 
-It is I/O-free except for `load_policy`, which reads the sibling weight config
-(trio_policy.json). The predicates themselves take weights as an explicit
-argument, so they stay pure and fully unit-testable.
+It is I/O-free except for `load_policy`, which reads the shared weight config
+(bin/lib/trio_policy.json) so a re-weight is a one-line edit shared with
+trio_policy.sh. The predicates themselves take weights as an explicit argument,
+so they stay pure and fully unit-testable.
 
 The rules (docs/TRIO_TRUST_MODEL_2026-06-03.md):
 
   - A finding's FORCE = engine_weight * confidence.
   - CROSS-ENGINE AGREEMENT (two distinct lineages concurring on one claim)
     raises confidence sharply: combined via noisy-or over per-family bests.
-  - On a SENSITIVE (tier3) diff, NO single sub-top finding auto-acts or
-    auto-dismisses. Only the adjudicator (the top weight, Opus) decides:
-    a claim the adjudicator raised -> ACT; a claim only sub-top engines raised
-    -> ESCALATE (Opus adjudicates). A Gemini-only flag is never a veto and is
-    never silently dropped: it escalates.
+  - On a SENSITIVE (tier3) diff, NO non-adjudicator finding auto-acts or
+    auto-dismisses. Only the adjudicator (Opus) decides. Adjudicator identity
+    is FAMILY-LOCKED config (policy "adjudicator", default claude) and
+    excludes sub-top same-family models (haiku/sonnet); it is NEVER derived
+    from the weights, so a learned weight tie can never grant the seat
+    (T0 guard rail, WEIGHTS_PLAN_REVIEW_2026-06-12). A claim the adjudicator
+    raised -> ACT; a claim only other engines raised -> ESCALATE (Opus
+    adjudicates). A Gemini-only flag is never a veto and is never silently
+    dropped: it escalates.
   - On a NON-SENSITIVE diff, weighted findings are acted on directly: ACT when
     there is cross-engine agreement or the boosted force clears the threshold;
     otherwise DISMISS.
@@ -69,6 +74,14 @@ _FAMILY_ALIASES: dict[str, str] = {
 
 _DEFAULT_WEIGHTS: dict[str, float] = {"claude": 9.0, "codex": 8.5, "gemini": 8.0}
 _DEFAULT_SENSITIVE_MIN = 8.5
+# T0 guard rail (WEIGHTS_PLAN_REVIEW_2026-06-12): authority is DECLARED config,
+# never derived from the tunable weights. The adjudicator seat is family-locked,
+# and sub-top same-family models never inherit it (a Haiku reviewer aliases to
+# family "claude" at weight 9.0; without the exclusion it would self-adjudicate
+# sensitive findings as "the adjudicator raised it").
+_DEFAULT_ADJUDICATOR = "claude"
+_DEFAULT_SENSITIVE_AUTHORS: tuple[str, ...] = ("claude", "codex")
+_SUBTOP_MODELS: tuple[str, ...] = ("haiku", "sonnet")
 # Default "act directly" force bar on non-sensitive diffs. 6.0 means a single
 # trusted-engine finding acts at conf ~0.67 (claude) / ~0.71 (codex) / 0.75
 # (gemini); a low-confidence lone flag falls below it and is dismissed.
@@ -96,16 +109,47 @@ def _clamp01(value: Any) -> float:
     return 0.0 if c < 0.0 else 1.0 if c > 1.0 else c
 
 
+def _apply_clamps(
+    weights: dict[str, float],
+    smin: float,
+    sensitive_authors: list[str] | tuple[str, ...],
+    adjudicator: str,
+) -> dict[str, float]:
+    """Absolute clamps (T0 guard rail): non-adjudicator weights stay strictly
+    below the adjudicator's; declared sensitive authors stay floored at the
+    sensitive threshold. A hand- or proposal-edited NUMBER can never move an
+    engine across either boundary through this reader; a real crossing
+    requires editing the DECLARED authority keys, which live in a tier3 +
+    gate-file protected file. The reader clamp is last-resort containment;
+    the weight applier is the loud refusal path.
+
+    Mirrored by the shell loader in trio_policy.sh; keep the two in step.
+    """
+    adj_w = weights.get(adjudicator)
+    out = dict(weights)
+    for fam, w in weights.items():
+        v = w
+        if adj_w is not None and fam != adjudicator and v >= adj_w:
+            v = round(adj_w - 0.1, 4)
+        if fam in sensitive_authors and v < smin:
+            v = smin
+        out[fam] = v
+    return out
+
+
 def load_policy(path: Any = None) -> dict[str, Any]:
-    """Read weights + the sensitive threshold from the shared JSON config.
+    """Read weights + the sensitive threshold + the DECLARED authority sets
+    (adjudicator family, sensitive_authors) from the shared JSON config.
 
     Falls back to the baked defaults if the file is missing or malformed, and
-    always guarantees the three known families have a weight. The ONLY I/O in
-    this module.
+    always guarantees the three known families have a weight. Applies the T0
+    absolute clamps. The ONLY I/O in this module.
     """
     p = Path(path) if path else _POLICY_PATH
     weights = dict(_DEFAULT_WEIGHTS)
     smin = _DEFAULT_SENSITIVE_MIN
+    adjudicator = _DEFAULT_ADJUDICATOR
+    authors = list(_DEFAULT_SENSITIVE_AUTHORS)
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
         raw = data.get("weights", {})
@@ -116,11 +160,22 @@ def load_policy(path: Any = None) -> dict[str, Any]:
                 except (TypeError, ValueError):
                     continue
         smin = float(data.get("sensitive_min_weight", _DEFAULT_SENSITIVE_MIN))
+        if isinstance(data.get("adjudicator"), str) and data["adjudicator"]:
+            adjudicator = data["adjudicator"]
+        raw_a = data.get("sensitive_authors")
+        if isinstance(raw_a, list) and raw_a:
+            authors = [str(a) for a in raw_a]
     except (OSError, ValueError, TypeError):
         pass
     for fam, w in _DEFAULT_WEIGHTS.items():
         weights.setdefault(fam, w)
-    return {"weights": weights, "sensitive_min_weight": smin}
+    weights = _apply_clamps(weights, smin, authors, adjudicator)
+    return {
+        "weights": weights,
+        "sensitive_min_weight": smin,
+        "adjudicator": adjudicator,
+        "sensitive_authors": authors,
+    }
 
 
 # --- Domain-aware policy (general/code vs ui/design) -------------------------
@@ -153,9 +208,11 @@ def load_domain_policy(domain: str = "general", path: Any = None) -> dict[str, A
     Returns {domain, weights, sensitive_min_weight, fleet_ratio, roles}.
     """
     p = Path(path) if path else _POLICY_PATH
-    base = load_policy(p)  # flat general default (weights + sensitive_min_weight)
+    base = load_policy(p)  # flat general default (weights + threshold + authority)
     weights = dict(base["weights"])
     smin = base["sensitive_min_weight"]
+    adjudicator = base["adjudicator"]
+    authors = list(base["sensitive_authors"])
     fleet_ratio: dict[str, float] = {}
     roles: dict[str, str] = {}
     chosen = domain
@@ -177,6 +234,9 @@ def load_domain_policy(domain: str = "general", path: Any = None) -> dict[str, A
                 smin = float(table["sensitive_min_weight"])
             except (TypeError, ValueError):
                 pass
+        raw_a = table.get("sensitive_authors")
+        if isinstance(raw_a, list) and raw_a:
+            authors = [str(a) for a in raw_a]
         raw_r = table.get("fleet_ratio")
         if isinstance(raw_r, dict):
             for fam, r in raw_r.items():
@@ -191,10 +251,13 @@ def load_domain_policy(domain: str = "general", path: Any = None) -> dict[str, A
         pass
     for fam, w in _DEFAULT_WEIGHTS.items():
         weights.setdefault(fam, w)
+    weights = _apply_clamps(weights, smin, authors, adjudicator)
     return {
         "domain": chosen,
         "weights": weights,
         "sensitive_min_weight": smin,
+        "adjudicator": adjudicator,
+        "sensitive_authors": authors,
         "fleet_ratio": fleet_ratio,
         "roles": roles,
     }
@@ -210,11 +273,24 @@ def finding_force(engine: Any, confidence: Any, weights: dict[str, float]) -> fl
     return engine_weight(engine, weights) * _clamp01(confidence)
 
 
-def is_adjudicator(engine: Any, weights: dict[str, float]) -> bool:
-    """True if the engine carries the top trust weight (the adjudicator, Opus)."""
-    if not weights:
+def is_adjudicator(engine: Any, weights: dict[str, float], *, adjudicator: str | None = None) -> bool:
+    """True only for the configured adjudicator family's top model.
+
+    FAMILY-LOCKED (T0 guard rail), never weight-derived. The old predicate
+    (engine_weight >= max(weights)) let any engine learn its way into the
+    seat via a weight tie, and let a sub-top same-family model (haiku/sonnet
+    alias to family "claude" at weight 9.0) self-adjudicate sensitive
+    findings. `weights` stays in the signature for call-site compatibility
+    but no longer decides identity.
+    """
+    del weights  # identity is declared config, never weight-derived
+    fam = _canonical_family(engine)
+    if not fam:
         return False
-    return engine_weight(engine, weights) >= max(weights.values())
+    if fam != (adjudicator or _DEFAULT_ADJUDICATOR):
+        return False
+    key = re.sub(r"[^a-z0-9]", "", str(engine).lower())
+    return not any(key.startswith(m) for m in _SUBTOP_MODELS)
 
 
 def _noisy_or(confidences: Any) -> float:
@@ -244,10 +320,13 @@ def adjudicate_claim(
     sensitive: bool,
     weights: dict[str, float],
     act_threshold: float = _DEFAULT_ACT_THRESHOLD,
+    adjudicator: str | None = None,
 ) -> dict[str, Any]:
     """Adjudicate ONE claim (a group of findings about the same issue).
 
-    Returns {verdict, force, families, agreement, adjudicator, reason}.
+    `adjudicator` is the family-locked adjudicator family (defaults to the
+    policy default, claude). Returns {verdict, force, families, agreement,
+    adjudicator, reason}.
     """
     families = sorted({_canonical_family(f.get("engine")) for f in findings if _canonical_family(f.get("engine"))})
     if not families:
@@ -261,7 +340,7 @@ def adjudicate_claim(
         }
 
     agreement = len(families) >= 2
-    adjudicator = any(is_adjudicator(f.get("engine"), weights) for f in findings)
+    adjudicator_raised = any(is_adjudicator(f.get("engine"), weights, adjudicator=adjudicator) for f in findings)
 
     # Best confidence per family, then noisy-or so only independent lineages
     # (not repeated same-family findings) compound the confidence.
@@ -276,13 +355,13 @@ def adjudicate_claim(
     boosted_force = round(top_weight * claim_confidence, 4)
 
     if sensitive:
-        if adjudicator:
+        if adjudicator_raised:
             verdict = ACT
             reason = "sensitive: the adjudicator (Opus) raised it; acted on directly"
         else:
             verdict = ESCALATE
             reason = (
-                "sensitive: sub-top finding(s) escalated to Opus "
+                "sensitive: non-adjudicator finding(s) escalated to Opus "
                 + ("(cross-engine agreement raises confidence)" if agreement else "(single engine, never dropped)")
             )
     else:
@@ -302,7 +381,7 @@ def adjudicate_claim(
         "force": boosted_force,
         "families": families,
         "agreement": agreement,
-        "adjudicator": adjudicator,
+        "adjudicator": adjudicator_raised,
         "reason": reason,
     }
 
@@ -313,12 +392,18 @@ def adjudicate(
     sensitive: bool,
     weights: dict[str, float] | None = None,
     act_threshold: float = _DEFAULT_ACT_THRESHOLD,
+    adjudicator: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Group findings by claim and adjudicate each. weights defaults to the
-    shared config. Returns one verdict dict per claim, each with a "claim" key.
+    """Group findings by claim and adjudicate each. weights + the adjudicator
+    family default to the shared config. Returns one verdict dict per claim,
+    each with a "claim" key.
     """
-    if weights is None:
-        weights = load_policy()["weights"]
+    if weights is None or adjudicator is None:
+        pol = load_policy()
+        if weights is None:
+            weights = pol["weights"]
+        if adjudicator is None:
+            adjudicator = pol["adjudicator"]
     groups: dict[str, list[dict[str, Any]]] = {}
     order: list[str] = []
     for f in findings:
@@ -329,7 +414,13 @@ def adjudicate(
         groups[key].append(f)
     results = []
     for key in order:
-        verdict = adjudicate_claim(groups[key], sensitive=sensitive, weights=weights, act_threshold=act_threshold)
+        verdict = adjudicate_claim(
+            groups[key],
+            sensitive=sensitive,
+            weights=weights,
+            act_threshold=act_threshold,
+            adjudicator=adjudicator,
+        )
         verdict["claim"] = key
         results.append(verdict)
     return results

@@ -44,11 +44,66 @@ def test_finding_force_and_confidence_clamp() -> None:
     assert adj.finding_force("codex", "nope", W) == 0.0
 
 
-def test_is_adjudicator_is_top_weight_only() -> None:
+def test_is_adjudicator_family_locked() -> None:
+    # T0 guard rail: adjudicator identity is DECLARED config, never derived.
     assert adj.is_adjudicator("opus", W) is True
     assert adj.is_adjudicator("claude", W) is True
+    assert adj.is_adjudicator("Opus 4.8", W) is True
     assert adj.is_adjudicator("codex", W) is False
     assert adj.is_adjudicator("gemini", W) is False
+
+
+def test_is_adjudicator_ignores_weight_ties() -> None:
+    # The old predicate (weight >= max) let a learned tie or overshoot grant
+    # the seat. Family-locked identity cannot be bought with weights.
+    inflated = {"claude": 9.0, "codex": 9.0, "gemini": 9.5}
+    assert adj.is_adjudicator("codex", inflated) is False
+    assert adj.is_adjudicator("gemini", inflated) is False
+    assert adj.is_adjudicator("opus", inflated) is True
+
+
+def test_is_adjudicator_excludes_subtop_family_models() -> None:
+    # haiku/sonnet alias to family claude at weight 9.0; they must never
+    # inherit the seat (the cross-model review's self-adjudication exploit).
+    assert adj.is_adjudicator("haiku", W) is False
+    assert adj.is_adjudicator("Haiku 4.5", W) is False
+    assert adj.is_adjudicator("sonnet", W) is False
+
+
+def test_is_adjudicator_config_override() -> None:
+    assert adj.is_adjudicator("codex", W, adjudicator="codex") is True
+    assert adj.is_adjudicator("opus", W, adjudicator="codex") is False
+
+
+def test_sensitive_haiku_finding_escalates_not_acts() -> None:
+    # A Haiku reviewer aliases to family claude at weight 9.0 and used to
+    # auto-ACT sensitive findings as "the adjudicator raised it".
+    r = adj.adjudicate_claim([{"engine": "haiku", "confidence": 0.9}], sensitive=True, weights=W)
+    assert r["verdict"] == adj.ESCALATE
+    assert r["adjudicator"] is False
+
+
+def test_policy_declares_authority() -> None:
+    # T0: authority is declared in the policy file, not derived from weights.
+    pol = adj.load_policy()
+    assert pol["adjudicator"] == "claude"
+    assert pol["sensitive_authors"] == ["claude", "codex"]
+    ui = adj.load_domain_policy("ui")
+    assert ui["sensitive_authors"] == ["claude"]
+    assert ui["adjudicator"] == "claude"
+
+
+def test_reader_clamps_boundary_crossings(tmp_path) -> None:
+    # T0 absolute clamps: an edited NUMBER alone cannot cross either boundary.
+    data = json.loads(CFG.read_text())
+    data["weights"]["gemini"] = 9.6  # would beat/tie the adjudicator
+    data["weights"]["codex"] = 8.2  # would silently revoke a declared author
+    alt = tmp_path / "alt.json"
+    alt.write_text(json.dumps(data))
+    w = adj.load_policy(alt)["weights"]
+    assert w["gemini"] == 8.9  # capped strictly below claude (9 - 0.1)
+    assert w["codex"] == 8.5  # floored at sensitive_min_weight (declared author)
+    assert w["claude"] == 9
 
 
 def test_noisy_or_compounds_independent_confidence() -> None:
