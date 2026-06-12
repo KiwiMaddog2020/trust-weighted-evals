@@ -101,6 +101,32 @@ def rater_names(state: dict, entry: dict) -> list[str]:
     return list(DEFAULT_RATERS)
 
 
+def coerce_score(value):
+    """Coerce a rater score to a finite float in [0, 10]; unusable -> None.
+
+    Trio-rerun fix (2026-06-12, cross-engine agreement): `inf`/`nan`,
+    out-of-range numbers, and non-numeric strings must never satisfy a
+    convergence target or reach the state JSON. Numeric strings ("9.6")
+    coerce cleanly; everything else returns None so callers fail loud
+    (intake) or fail closed (convergence).
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float("inf"), float("-inf")):
+        return None
+    return f if 0.0 <= f <= 10.0 else None
+
+
+def _score_arg(value: str) -> float:
+    """argparse caster: a craft/fit flag must be a finite score in [0, 10]."""
+    f = coerce_score(value)
+    if f is None:
+        raise ValueError(f"score must be a finite number in [0, 10], got {value!r}")
+    return f
+
+
 def decide_convergence(state: dict, this_pass: dict, new_findings: int) -> tuple[str, str]:
     """Return (status, reasoning) per the locked criteria + plateau exception.
 
@@ -132,9 +158,14 @@ def decide_convergence(state: dict, this_pass: dict, new_findings: int) -> tuple
     criteria: dict[str, bool] = {}
     for name in names:
         r = raters.get(name) or {}
+        # Fail closed on malformed scores: coerce_score returns None for
+        # inf/nan/out-of-range/non-numeric, and None never clears a target
+        # (trio-rerun fix: `--craft inf` used to converge; a string crashed).
+        craft = coerce_score(r.get("craft"))
+        fit = coerce_score(r.get("fit"))
         criteria[f"{name}_verdict_GO"] = r.get("verdict") == "GO"
-        criteria[f"{name}_craft_ok"] = (r.get("craft") or 0) >= target_craft
-        criteria[f"{name}_fit_ok"] = (r.get("fit") or 0) >= target_fit
+        criteria[f"{name}_craft_ok"] = craft is not None and craft >= target_craft
+        criteria[f"{name}_fit_ok"] = fit is not None and fit >= target_fit
     criteria["no_new_findings"] = new_findings == 0
 
     if criteria and all(criteria.values()):
@@ -218,18 +249,32 @@ def collect_legacy(args) -> tuple[dict, int, list, int | None, str]:
     codex_parsed = parse_polish(args.codex)
     claude_parsed = parse_polish(args.claude)
 
+    def _legacy_score(parsed: dict, field: str, path) -> float | None:
+        """Validate a markdown-parsed score at intake (Tier-2 round-2 fix:
+        a 'craft 11' in a legacy report used to persist into the state JSON;
+        decide_convergence failed closed but the garbage was stored)."""
+        raw = parsed.get(field)
+        if raw is None:
+            return None
+        coerced = coerce_score(raw)
+        if coerced is None:
+            raise ValueError(
+                f"legacy report {path}: {field} must be a finite number in [0, 10], got {raw!r}"
+            )
+        return coerced
+
     raters = {
         "codex": {
             "output_path": str(args.codex),
             "verdict": codex_parsed.get("verdict"),
-            "craft": codex_parsed.get("craft"),
-            "fit": codex_parsed.get("fit"),
+            "craft": _legacy_score(codex_parsed, "craft", args.codex),
+            "fit": _legacy_score(codex_parsed, "fit", args.codex),
         },
         "claude": {
             "output_path": str(args.claude),
             "verdict": claude_parsed.get("verdict"),
-            "craft": claude_parsed.get("craft"),
-            "fit": claude_parsed.get("fit"),
+            "craft": _legacy_score(claude_parsed, "craft", args.claude),
+            "fit": _legacy_score(claude_parsed, "fit", args.claude),
         },
     }
 
@@ -268,11 +313,21 @@ def collect_generalized(args) -> tuple[dict, int, list, int | None, str]:
         if not isinstance(rmap, dict) or not rmap:
             raise ValueError("--raters-json must contain a non-empty 'raters' object")
         for name, r in rmap.items():
+            scores = {}
+            for field in ("craft", "fit"):
+                raw = r.get(field)
+                coerced = coerce_score(raw) if raw is not None else None
+                if raw is not None and coerced is None:
+                    raise ValueError(
+                        f"--raters-json: rater {name!r} {field} must be a finite "
+                        f"number in [0, 10], got {raw!r}"
+                    )
+                scores[field] = coerced
             raters[name.lower()] = {
                 "output_path": r.get("output_path"),
                 "verdict": (r.get("verdict") or None),
-                "craft": r.get("craft"),
-                "fit": r.get("fit"),
+                "craft": scores["craft"],
+                "fit": scores["fit"],
             }
         if new_findings is None:
             new_findings = blob.get("new_findings")
@@ -358,10 +413,10 @@ def build_parser() -> argparse.ArgumentParser:
     # Generalized N-rater dialect.
     ap.add_argument("--rater", action=_RaterAction, dest="rater", default=None,
                     help="Engine name; repeatable. Follow with --craft/--fit/--verdict.")
-    ap.add_argument("--craft", action=_make_group_scalar("craft", float),
-                    help="Craft score for the most recent --rater.")
-    ap.add_argument("--fit", action=_make_group_scalar("fit", float),
-                    help="Fit score for the most recent --rater.")
+    ap.add_argument("--craft", action=_make_group_scalar("craft", _score_arg),
+                    help="Craft score for the most recent --rater (finite, 0-10).")
+    ap.add_argument("--fit", action=_make_group_scalar("fit", _score_arg),
+                    help="Fit score for the most recent --rater (finite, 0-10).")
     ap.add_argument("--verdict", action=_make_group_scalar("verdict", str),
                     help="Verdict for the most recent --rater (GO/GATED-GO/...).")
     ap.add_argument("--rater-output", action=_make_group_scalar("output", str),
@@ -503,7 +558,10 @@ def main(argv: list[str]) -> int:
     state["convergence"]["status"] = decision
     state["convergence"]["last_reasoning"] = reasoning
 
-    args.state.write_text(json.dumps(state, indent=2))
+    # allow_nan=False: the state file is standards-compliant JSON; with intake
+    # validation upstream this never fires, but if a non-finite ever reaches
+    # here we crash rather than write an Infinity token other parsers reject.
+    args.state.write_text(json.dumps(state, indent=2, allow_nan=False))
 
     result = {
         "convergence": decision,
@@ -530,7 +588,7 @@ def main(argv: list[str]) -> int:
         result["claude_craft_fit"] = [
             raters_map["claude"].get("craft"), raters_map["claude"].get("fit")
         ]
-    print(json.dumps(result, indent=2))
+    print(json.dumps(result, indent=2, allow_nan=False))
     return 0
 
 

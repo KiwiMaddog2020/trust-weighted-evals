@@ -98,6 +98,18 @@ def _canonical_family(value: Any) -> str:
     return _FAMILY_ALIASES.get(key, "")
 
 
+def _weight_value(raw: Any) -> float | None:
+    """A configured weight is a flat number or a provenance dict
+    {"value": V, "as_of": ..., "basis": ..., "evidence": ...} written by
+    bin/trio-weight-apply.py (T1). Readers take .value; unusable -> None."""
+    if isinstance(raw, dict):
+        raw = raw.get("value")
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _clamp01(value: Any) -> float:
     """Coerce a confidence to a float in [0, 1]; unusable input -> 0.0."""
     try:
@@ -125,15 +137,21 @@ def _apply_clamps(
 
     Mirrored by the shell loader in trio_policy.sh; keep the two in step.
     """
-    adj_w = weights.get(adjudicator)
     out = dict(weights)
-    for fam, w in weights.items():
-        v = w
-        if adj_w is not None and fam != adjudicator and v >= adj_w:
-            v = round(adj_w - 0.1, 4)
-        if fam in sensitive_authors and v < smin:
-            v = smin
-        out[fam] = v
+    # Floor declared authors FIRST (the adjudicator included), THEN cap
+    # non-adjudicators strictly below the post-floor adjudicator weight.
+    # Tier-2 round-2 fix: cap-before-floor with the pre-floor adjudicator
+    # weight let a raised sensitive_min_weight floor a declared author into
+    # a TIE with the adjudicator. In the degenerate config (floor at or
+    # above the adjudicator's weight) the cap WINS: the strictly-below
+    # invariant outranks the floor, and identity stays family-locked anyway.
+    for fam, w in out.items():
+        if fam in sensitive_authors and w < smin:
+            out[fam] = smin
+    adj_w = out.get(adjudicator)
+    for fam, w in out.items():
+        if adj_w is not None and fam != adjudicator and w >= adj_w:
+            out[fam] = round(adj_w - 0.1, 4)
     return out
 
 
@@ -155,10 +173,9 @@ def load_policy(path: Any = None) -> dict[str, Any]:
         raw = data.get("weights", {})
         if isinstance(raw, dict):
             for fam, w in raw.items():
-                try:
-                    weights[str(fam)] = float(w)
-                except (TypeError, ValueError):
-                    continue
+                v = _weight_value(w)
+                if v is not None:
+                    weights[str(fam)] = v
         smin = float(data.get("sensitive_min_weight", _DEFAULT_SENSITIVE_MIN))
         if isinstance(data.get("adjudicator"), str) and data["adjudicator"]:
             adjudicator = data["adjudicator"]
@@ -207,6 +224,9 @@ def load_domain_policy(domain: str = "general", path: Any = None) -> dict[str, A
 
     Returns {domain, weights, sensitive_min_weight, fleet_ratio, roles}.
     """
+    # Normalize before lookup: "UI" must hit the ui table, not silently fall
+    # back to general (Tier-2 round-2 fix, fail-open on miscased domains).
+    domain = str(domain or "general").lower()
     p = Path(path) if path else _POLICY_PATH
     base = load_policy(p)  # flat general default (weights + threshold + authority)
     weights = dict(base["weights"])
@@ -225,10 +245,9 @@ def load_domain_policy(domain: str = "general", path: Any = None) -> dict[str, A
         raw_w = table.get("weights")
         if isinstance(raw_w, dict):
             for fam, w in raw_w.items():
-                try:
-                    weights[str(fam)] = float(w)
-                except (TypeError, ValueError):
-                    continue
+                v = _weight_value(w)
+                if v is not None:
+                    weights[str(fam)] = v
         if "sensitive_min_weight" in table:
             try:
                 smin = float(table["sensitive_min_weight"])
@@ -356,8 +375,22 @@ def adjudicate_claim(
 
     if sensitive:
         if adjudicator_raised:
-            verdict = ACT
-            reason = "sensitive: the adjudicator (Opus) raised it; acted on directly"
+            # The adjudicator's claim must carry a USABLE confidence. A real
+            # low confidence (0.2) still acts (the seat owns sensitive calls),
+            # but missing/None/NaN/zero clamps to 0.0, and acting on malformed
+            # input bypasses the force model entirely (trio-rerun fix
+            # 2026-06-12): escalate instead, never auto-act on garbage.
+            adjudicator_conf_usable = any(
+                is_adjudicator(f.get("engine"), weights, adjudicator=adjudicator)
+                and _clamp01(f.get("confidence")) > 0.0
+                for f in findings
+            )
+            if adjudicator_conf_usable:
+                verdict = ACT
+                reason = "sensitive: the adjudicator (Opus) raised it; acted on directly"
+            else:
+                verdict = ESCALATE
+                reason = "sensitive: adjudicator finding lacks a usable confidence; escalated, never auto-acted"
         else:
             verdict = ESCALATE
             reason = (
@@ -384,6 +417,60 @@ def adjudicate_claim(
         "adjudicator": adjudicator_raised,
         "reason": reason,
     }
+
+
+def to_match_records(
+    findings: list[dict[str, Any]],
+    verdicts: list[dict[str, Any]],
+    *,
+    introduced_by: str | None = None,
+    default_provenance: str = "pre-swap",
+) -> list[dict[str, Any]]:
+    """Convert pooled findings + adjudicate() verdicts into recorder-ready
+    per-claim match records (T2, adaptive-weights rev 2).
+
+    Records are born UNSETTLED: settled_by "none", settled_outcome "pending".
+    The adjudicated verdict is NEVER a match outcome (the decorrelation
+    rule); only weight-independent verification (a test, F5 survival, a
+    resurfaced dismissal, a human call) may settle a record later, and the
+    counting report counts ONLY settled ones. Per-finding "provenance"
+    ("pre-swap" | "post-swap") is preserved; only pre-swap concurrence
+    counts as independent agreement downstream.
+    """
+    by_claim: dict[str, list[dict[str, Any]]] = {}
+    for f in findings:
+        by_claim.setdefault(_claim_key(f), []).append(f)
+    records = []
+    for v in verdicts:
+        group = by_claim.get(v.get("claim", ""), [])
+        confidences = [_clamp01(f.get("confidence")) for f in group]
+        provenances = {
+            f.get("provenance") for f in group if f.get("provenance") in ("pre-swap", "post-swap")
+        }
+        # Mixed evidence labels CONSERVATIVELY: any post-swap finding in the
+        # group anchors the whole claim (Tier-2 fix: a pre/post mix used to
+        # collapse to the pre-swap default, mislabeling anchored agreement
+        # as independent).
+        if "post-swap" in provenances:
+            provenance = "post-swap"
+        elif provenances == {"pre-swap"}:
+            provenance = "pre-swap"
+        else:
+            provenance = default_provenance
+        record = {
+            "claim": str(v.get("claim", "")),
+            "verdict": v.get("verdict"),
+            "families": list(v.get("families", [])),
+            "confidence": max(confidences, default=0.0),
+            "caught_by": list(v.get("families", [])),
+            "provenance": provenance,
+            "settled_by": "none",
+            "settled_outcome": "pending",
+        }
+        if introduced_by:
+            record["introduced_by"] = introduced_by
+        records.append(record)
+    return records
 
 
 def adjudicate(

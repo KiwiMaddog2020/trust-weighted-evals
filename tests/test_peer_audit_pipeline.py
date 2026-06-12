@@ -511,3 +511,100 @@ def test_schema_validates_a_two_rater_state():
                 assert key in doc, f"required key {key} missing from state"
             assert "target_craft" in doc["convergence"]
             assert isinstance(doc["history"][-1]["raters"], dict)
+
+
+# Score validation (trio-rerun fixes, 2026-06-12)
+
+
+def test_inf_scores_never_converge_or_persist():
+    # Cross-engine agreement finding: `--craft inf` used to converge AND write
+    # nonstandard Infinity tokens into the state JSON. Now: argparse rejects
+    # the flag form outright.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        state = _write_state(d, "infreject", ["opus", "codex"])
+        err = _run_update_expect_fail(
+            state, "--pass", "1", "--new-findings", "0",
+            "--rater", "opus", "--craft", "inf", "--fit", "9.6", "--verdict", "GO",
+        )
+        assert "invalid value" in err
+        assert "Infinity" not in state.read_text()
+
+
+def test_out_of_range_scores_rejected():
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        state = _write_state(d, "rangereject", ["opus", "codex"])
+        err = _run_update_expect_fail(
+            state, "--pass", "1", "--new-findings", "0",
+            "--rater", "opus", "--craft", "11", "--fit", "9.6", "--verdict", "GO",
+        )
+        assert "invalid value" in err
+
+
+def test_raters_json_string_scores_coerce_cleanly():
+    # Gemini minority finding, DISMISSED by force then verified real (the
+    # censoring-audit catch): string scores in --raters-json crashed
+    # decide_convergence with a TypeError. Now they coerce to float.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        state = _write_state(d, "strcoerce", ["opus", "codex"])
+        blob = json.dumps({
+            "raters": {
+                "opus": {"craft": "9.6", "fit": "9.7", "verdict": "GO"},
+                "codex": {"craft": "9.6", "fit": "9.6", "verdict": "GO"},
+            },
+            "new_findings": 0,
+        })
+        out = _run_update(state, "--pass", "1", "--raters-json", blob)
+        assert out["convergence"] == "converged", out
+
+
+def test_raters_json_garbage_scores_fail_loud():
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        state = _write_state(d, "garbage", ["opus", "codex"])
+        blob = json.dumps({
+            "raters": {"opus": {"craft": "great", "fit": 9.7, "verdict": "GO"}},
+            "new_findings": 0,
+        })
+        err = _run_update_expect_fail(state, "--pass", "1", "--raters-json", blob)
+        assert "finite" in err
+
+
+def test_preexisting_malformed_state_scores_fail_closed():
+    # Defense in depth: a hand-edited state with a string score must neither
+    # crash decide_convergence nor converge.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        state = _write_state(d, "handedit", ["opus", "codex"])
+        s = json.loads(state.read_text())
+        s["history"] = []
+        state.write_text(json.dumps(s))
+        blob = json.dumps({
+            "raters": {
+                "opus": {"craft": 9.6, "fit": 9.7, "verdict": "GO"},
+                "codex": {"craft": 9.6, "fit": 9.6, "verdict": "GO"},
+            },
+            "new_findings": 0,
+        })
+        out = _run_update(state, "--pass", "1", "--raters-json", blob)
+        assert out["convergence"] == "converged"
+
+
+def test_legacy_malformed_report_score_fails_loud():
+    # Tier-2 round-2 fix: a legacy markdown report carrying 'craft 11' used
+    # to persist the garbage into the state JSON (convergence failed closed,
+    # but the value was stored). Now intake rejects it outright.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        state = _write_state(d, "legacybad", ["codex", "claude"])
+        codex = d / "codex.md"
+        claude = d / "claude.md"
+        codex.write_text(_polish_report(11, 9.6, "GO", 0, []))
+        claude.write_text(_polish_report(9.7, 9.6, "GO", 0, []))
+        err = _run_update_expect_fail(
+            state, "--codex", str(codex), "--claude", str(claude), "--pass", "1"
+        )
+        assert "finite" in err
+        assert "11" not in state.read_text()

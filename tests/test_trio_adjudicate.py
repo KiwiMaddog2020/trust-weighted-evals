@@ -204,3 +204,75 @@ def test_json_python_weights_agree() -> None:
     assert adj.engine_weight("codex", W) == float(jw["codex"])
     assert adj.engine_weight("gemini", W) == float(jw["gemini"])
     assert adj.load_policy()["sensitive_min_weight"] == float(cfg["sensitive_min_weight"])
+
+
+# Trio-rerun + T2 additions (2026-06-12)
+
+
+def test_sensitive_adjudicator_malformed_confidence_escalates() -> None:
+    # Trio-rerun fix: a missing/None/NaN/zero confidence clamps to 0.0, and the
+    # old sensitive branch auto-ACTed it as "the adjudicator raised it",
+    # bypassing the force model on malformed input. Now it escalates.
+    for bad in ({}, {"confidence": None}, {"confidence": float("nan")}, {"confidence": 0}):
+        r = adj.adjudicate_claim([{"engine": "opus", **bad}], sensitive=True, weights=W)
+        assert r["verdict"] == adj.ESCALATE, bad
+    # A real low confidence still acts: the seat owns sensitive calls.
+    r = adj.adjudicate_claim([{"engine": "opus", "confidence": 0.2}], sensitive=True, weights=W)
+    assert r["verdict"] == adj.ACT
+
+
+def test_clamp_order_floor_then_cap_never_ties_adjudicator(tmp_path) -> None:
+    # Tier-2 round-2 fix: cap-before-floor let a raised sensitive_min_weight
+    # floor a declared author into a TIE with the adjudicator. Floor first,
+    # then cap strictly below the post-floor adjudicator.
+    data = json.loads(CFG.read_text())
+    data["sensitive_min_weight"] = 9.5
+    alt = tmp_path / "alt.json"
+    alt.write_text(json.dumps(data))
+    w = adj.load_policy(alt)["weights"]
+    assert w["claude"] == 9.5  # adjudicator floored as a declared author
+    assert w["codex"] == 9.4  # capped strictly below the post-floor adjudicator
+    assert w["codex"] < w["claude"]
+
+
+def test_load_domain_policy_normalizes_case() -> None:
+    # "UI" must hit the ui table, not silently fall back to general.
+    ui = adj.load_domain_policy("UI")
+    assert ui["domain"] == "ui"
+    assert ui["weights"]["codex"] == 7.5
+    assert ui["sensitive_authors"] == ["claude"]
+
+
+def test_to_match_records_born_unsettled_with_provenance() -> None:
+    # T2: match records are born UNSETTLED; the adjudicated verdict is never
+    # a match outcome (the decorrelation rule). Provenance is preserved.
+    findings = [
+        {"engine": "codex", "confidence": 0.95, "claim": "A", "provenance": "pre-swap"},
+        {"engine": "opus", "confidence": 0.9, "claim": "A", "provenance": "pre-swap"},
+        {"engine": "gemini", "confidence": 0.7, "claim": "B", "provenance": "post-swap"},
+    ]
+    verdicts = adj.adjudicate(findings, sensitive=False, weights=W)
+    records = adj.to_match_records(findings, verdicts, introduced_by="claude")
+    by_claim = {r["claim"]: r for r in records}
+    a = by_claim["A"]
+    assert a["settled_by"] == "none" and a["settled_outcome"] == "pending"
+    assert a["verdict"] == "act"
+    assert a["families"] == ["claude", "codex"]
+    assert a["confidence"] == 0.95
+    assert a["provenance"] == "pre-swap"
+    assert a["introduced_by"] == "claude"
+    b = by_claim["B"]
+    assert b["provenance"] == "post-swap"
+    assert b["settled_outcome"] == "pending"
+
+
+def test_to_match_records_mixed_provenance_labels_post_swap() -> None:
+    # Tier-2 round-3 fix: any post-swap finding anchors the whole claim;
+    # a pre/post mix must never be labeled independent pre-swap agreement.
+    findings = [
+        {"engine": "codex", "confidence": 0.8, "claim": "M", "provenance": "pre-swap"},
+        {"engine": "gemini", "confidence": 0.8, "claim": "M", "provenance": "post-swap"},
+    ]
+    verdicts = adj.adjudicate(findings, sensitive=False, weights=W)
+    records = adj.to_match_records(findings, verdicts)
+    assert records[0]["provenance"] == "post-swap"
