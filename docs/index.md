@@ -8,7 +8,7 @@
 > off-hours he builds and operates agentic systems on Claude Code; the
 > evaluation loop described here gates every change to that codebase. The
 > question it answers: how do you score AI output without trusting the AI's
-> opinion of itself? Code and contact: [github.com/KiwiMaddog2020/trust-weighted-evals](https://github.com/KiwiMaddog2020/trust-weighted-evals) · [kevinmadson3@gmail.com](mailto:kevinmadson3@gmail.com). <!-- pragma: allowlist -->
+> opinion of itself? Code and contact: [github.com/KiwiMaddog2020/trust-weighted-evals](https://github.com/KiwiMaddog2020/trust-weighted-evals) · [kevinmadson@protonmail.com](mailto:kevinmadson@protonmail.com). <!-- pragma: allowlist -->
 
 ---
 
@@ -247,4 +247,4 @@ enterprise team would use.
 
 *Kevin Madson builds agentic systems on Claude Code. The components described
 here are published at [github.com/KiwiMaddog2020/trust-weighted-evals](https://github.com/KiwiMaddog2020/trust-weighted-evals). Contact:
-[kevinmadson3@gmail.com](mailto:kevinmadson3@gmail.com).* <!-- pragma: allowlist -->
+[kevinmadson@protonmail.com](mailto:kevinmadson@protonmail.com).* <!-- pragma: allowlist -->
