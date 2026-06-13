@@ -1,5 +1,5 @@
 ---
-title: An evaluation framework you can trust
+title: "An evaluation framework you can trust: the doer never rates its own work"
 date: 2026-06-12
 ---
 
@@ -177,6 +177,14 @@ An evaluation framework that has never caught its own author is unproven. This
 one caught me four times before it shipped and seventeen more times after it
 landed, six of those in my fixes to the first batch.
 
+| Review pass | Caught | What it found |
+| --- | --- | --- |
+| Pre-ship, same-family reviewers | 4 | all survived verification; the worst silently disabled the security tier |
+| Build batch, three lineages | 10 | accepted and fixed of twelve claims, each reproduced with a live probe |
+| Re-review of those fixes | 6 | found in my own fixes, three of them high severity |
+| Re-probed dismissal | 1 | overturned a mechanical dismissal; a real crash, shipped the same day |
+| **Total against the author** | **21** | four before the build shipped, seventeen after it landed |
+
 ## Principle five: the weights themselves are on trial
 
 That batch is why there is a fifth principle.
@@ -200,9 +208,10 @@ exactly on the threshold. A few bounded, evidence-backed updates could have
 quietly granted or revoked security authority without any human deciding
 that. The fix was to make authority a declared list in a protected file
 rather than a derived comparison. Learned numbers can tune how much a
-rater's voice weighs. They can never buy a seat at the table. If you take one
-design rule from this post, take that one: never compute a safety predicate
-from a value your learning loop is allowed to move.
+rater's voice weighs. They can never buy a seat at the table.
+
+> If you take one design rule from this post, take that one: never compute a
+> safety predicate from a value your learning loop is allowed to move.
 
 Two more guards matter. Only disagreements settled by weight-independent
 verification (a failing test, a survival window, a human call) count as
