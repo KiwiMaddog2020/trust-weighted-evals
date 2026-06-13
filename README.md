@@ -29,7 +29,7 @@ When AI agents write code on their own, something has to decide whether the work
 
 ## What This Is Not
 
-This is an extract of one operator's personal system, not enterprise infrastructure. The engine dispatch tooling is not included: spawn scripts, maestro decision buffering, halt fences, and live runtime question tools are referenced by the protocol because they matter to the architecture, but they are not shipped here.
+This is an extract of one operator's personal system, not enterprise infrastructure. The engine dispatch tooling is not included: spawn scripts, decision buffering, halt fences, and live runtime question tools are referenced by the protocol because they matter to the architecture, but they are not shipped here.
 
 Four tests from the source repo are intentionally dropped because they assert pieces that do not ship: two protocol-oracle tests (the dispatch drivers existing on disk, the skill's registration in the source repo's plugin registry) and two weight-apply tests (the shell-side policy reader, and a round-trip through the source repo's weekly retro). Everything else runs verbatim.
 
