@@ -235,4 +235,4 @@ working system, built in the open hours around a day job, on the same primitives
 
 ---
 
-<p class="byline"><em>I build agentic systems across multiple coding LLMs. The components here are published at <a href="https://github.com/KiwiMaddog2020/trust-weighted-evals">github.com/KiwiMaddog2020/trust-weighted-evals</a>.</em></p>
+<p class="byline"><em>I build agentic systems across multiple coding LLMs. More of my research notes are <a href="/">here</a>.</em></p>
