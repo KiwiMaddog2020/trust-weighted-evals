@@ -8,7 +8,7 @@
 > off-hours he builds and operates agentic systems on Claude Code; the
 > evaluation loop described here gates every change to that codebase. The
 > question it answers: how do you score AI output without trusting the AI's
-> opinion of itself? Code and contact: https://github.com/KiwiMaddog2020/trust-weighted-evals · kevinmadson3@gmail.com. <!-- pragma: allowlist -->
+> opinion of itself? Code and contact: [github.com/KiwiMaddog2020/trust-weighted-evals](https://github.com/KiwiMaddog2020/trust-weighted-evals) · [kevinmadson3@gmail.com](mailto:kevinmadson3@gmail.com). <!-- pragma: allowlist -->
 
 ---
 
@@ -156,8 +156,8 @@ that found the original bugs then refuted the fixes for them. That is the rule
 doing its job on the person who wrote the rule.
 
 One more catch deserves its own paragraph. A finding from the lowest-weight
-engine was mechanically dismissed because its weighted force fell just under
-the action bar. The protocol calls for re-verifying a sample of dismissals
+engine, on a non-sensitive surface, was mechanically dismissed because its
+weighted force fell just under the action bar. The protocol calls for re-verifying a sample of dismissals
 anyway, precisely because the weights that dismiss findings are the same
 weights the system is learning, and a dismissed finding that never gets
 verified can never teach you the weight was wrong. The re-probe reproduced a
@@ -224,12 +224,12 @@ can defend, this is the blueprint, in order:
 ## The checkable numbers
 
 Claims in posts like this are cheap, so here is the inventory, sized honestly.
-The trust-weighted adjudicator is about 430 lines of Python with its own test
+The trust-weighted adjudicator is about 510 lines of Python with its own test
 suite. The three-rater convergence pipeline generalizes an existing two-rater
 review pipeline, kept fully backward compatible, with 27 end-to-end tests
 covering both dialects, the fail-closed regression, and the score-validation
 fixes from the cross-lineage review. The weight applier's refusal set has its
-own 14-test oracle. The protocol itself is two specification documents that an
+own 12-test oracle. The protocol itself is two specification documents that an
 agent executes, guarded by a 32-test static oracle. The fastest way to verify
 the engineering discipline behind all of this is the runnable artifact from
 the same toolchain: a pre-commit gate that blocks secrets and personal data,
@@ -246,5 +246,5 @@ enterprise team would use.
 ---
 
 *Kevin Madson builds agentic systems on Claude Code. The components described
-here are published at https://github.com/KiwiMaddog2020/trust-weighted-evals. Contact:
-kevinmadson3@gmail.com.* <!-- pragma: allowlist -->
+here are published at [github.com/KiwiMaddog2020/trust-weighted-evals](https://github.com/KiwiMaddog2020/trust-weighted-evals). Contact:
+[kevinmadson3@gmail.com](mailto:kevinmadson3@gmail.com).* <!-- pragma: allowlist -->

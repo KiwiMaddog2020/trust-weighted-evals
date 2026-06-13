@@ -31,7 +31,7 @@ This repo is the public companion extract for the write-up ["An evaluation frame
 
 This is an extract of one operator's personal system, not enterprise infrastructure. The engine dispatch tooling is not included: spawn scripts, maestro decision buffering, halt fences, and live runtime question tools are referenced by the protocol because they matter to the architecture, but they are not shipped here.
 
-Two tests from the source repo's protocol oracle are intentionally dropped because they assert environment facts that do not ship: one checks the dispatch drivers exist on disk, the other checks the skill's registration in the source repo's plugin registry. Everything else runs verbatim.
+Four tests from the source repo are intentionally dropped because they assert pieces that do not ship: two protocol-oracle tests (the dispatch drivers existing on disk, the skill's registration in the source repo's plugin registry) and two weight-apply tests (the shell-side policy reader, and a round-trip through the source repo's weekly retro). Everything else runs verbatim.
 
 Author: Kevin Madson
 
