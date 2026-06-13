@@ -9,8 +9,8 @@ date: 2026-06-12
 
 <p class="meta">Kevin Madson · June 2026 · 8 min read</p>
 
-> **If someone forwarded this to you:** I build and operate agentic systems on
-> Claude Code, and the evaluation loop described here gates every change to that
+> **If someone forwarded this to you:** I build and operate agentic systems across multiple
+> coding LLMs, and the evaluation loop described here gates every change to that
 > codebase. The question it answers: how do you score AI output without trusting
 > the AI's opinion of itself?
 
@@ -235,5 +235,4 @@ working system, built in the open hours around a day job, on the same primitives
 
 ---
 
-*I build agentic systems on Claude Code. The components here are published at
-[github.com/KiwiMaddog2020/trust-weighted-evals](https://github.com/KiwiMaddog2020/trust-weighted-evals).*
+<p class="byline"><em>I build agentic systems across multiple coding LLMs. The components here are published at <a href="https://github.com/KiwiMaddog2020/trust-weighted-evals">github.com/KiwiMaddog2020/trust-weighted-evals</a>.</em></p>
