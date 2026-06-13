@@ -1,6 +1,6 @@
 # Trust Weighted Evals
 
-This repo is the public companion extract for the write-up "An evaluation framework you can trust" ([WRITE-UP LINK]). It shows a small evaluation loop where independent raters score work, an adjudicator combines confidence with engine trust, and the protocol treats disagreement, safety floors, and honest failure as part of the output.
+This repo is the public companion extract for the write-up ["An evaluation framework you can trust"](https://kiwimaddog2020.github.io/trust-weighted-evals/). It shows a small evaluation loop where independent raters score work, an adjudicator combines confidence with engine trust, and the protocol treats disagreement, safety floors, and honest failure as part of the output.
 
 ## Components
 
@@ -35,4 +35,4 @@ Two tests from the source repo's protocol oracle are intentionally dropped becau
 
 Author: Kevin Madson
 
-Write-up: "An evaluation framework you can trust" ([WRITE-UP LINK])
+Write-up: ["An evaluation framework you can trust"](https://kiwimaddog2020.github.io/trust-weighted-evals/)
