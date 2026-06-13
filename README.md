@@ -1,6 +1,6 @@
 # Trust Weighted Evals
 
-This repo is the public companion extract for the write-up ["An evaluation framework you can trust"](https://kiwimaddog2020.github.io/trust-weighted-evals/). It shows a small evaluation loop where independent raters score work, an adjudicator combines confidence with engine trust, and the protocol treats disagreement, safety floors, and honest failure as part of the output.
+When AI agents write code on their own, something has to decide whether the work is any good, and letting the AI grade itself does not count. This is the public companion to the write-up ["An evaluation framework you can trust"](https://kiwimaddog2020.github.io/trust-weighted-evals/): a small review loop where work from one AI is scored by others, a combiner weighs each reviewer's vote by how much it has earned trust, and disagreement, safety limits, and honest failure are treated as part of the output rather than smoothed away.
 
 ## Components
 
