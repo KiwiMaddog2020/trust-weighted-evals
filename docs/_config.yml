@@ -1,6 +1,9 @@
 title: An evaluation framework you can trust
 description: Lessons from building a three-model review loop for agentic coding work
+url: https://kiwimaddog2020.github.io
+baseurl: /trust-weighted-evals
 plugins:
   - jekyll-optional-front-matter
   - jekyll-default-layout
   - jekyll-titles-from-headings
+  - jekyll-sitemap
