@@ -1,14 +1,19 @@
-# An evaluation framework you can trust
+---
+title: An evaluation framework you can trust
+date: 2026-06-12
+---
 
-*Lessons from building a three-model review loop for agentic coding work.*
+# An evaluation framework you can trust: the doer never rates its own work
 
-> **If someone forwarded this to you:** Kevin Madson spent nine years as a
-> telecom field technician solving technical problems on customer sites, then
-> moved into a senior business analyst role at a major telecom. In his
-> off-hours he builds and operates agentic systems on Claude Code; the
-> evaluation loop described here gates every change to that codebase. The
-> question it answers: how do you score AI output without trusting the AI's
-> opinion of itself? Code and contact: [github.com/KiwiMaddog2020/trust-weighted-evals](https://github.com/KiwiMaddog2020/trust-weighted-evals) · [kevinmadson@protonmail.com](mailto:kevinmadson@protonmail.com). <!-- pragma: allowlist -->
+<p class="dek">Lessons from building a three-model review loop for agentic coding work.</p>
+
+<p class="meta">Kevin Madson · June 2026 · 11 min read</p>
+
+> **If someone forwarded this to you:** Kevin Madson builds and operates
+> agentic systems on Claude Code, and the evaluation loop described here
+> gates every change to that codebase. The question it answers: how do you
+> score AI output without trusting the AI's opinion of itself? Code and
+> contact: [github.com/KiwiMaddog2020/trust-weighted-evals](https://github.com/KiwiMaddog2020/trust-weighted-evals) · [kevinmadson@protonmail.com](mailto:kevinmadson@protonmail.com). <!-- pragma: allowlist -->
 
 ---
 
@@ -73,7 +78,9 @@ minority report rule, and it now has its first measured data point: in the
 batch described below, the lowest-weight engine raised three claims nobody
 else found, two verified as real defects and the third as real but cosmetic.
 Three claims is not a statistic, so every one of these now lands in a match
-ledger and gets counted. The claim will earn a number or die by it.
+ledger and gets counted.
+
+> The claim will earn a number or die by it.
 
 ## Principle three: disagreement is the product
 
@@ -114,8 +121,9 @@ lie to you.
 While building the three-rater pipeline, I ran the same adversarial-review
 discipline on the build itself: independent reviewer agents, prompted to
 refute, with no stake in the work passing. The first pass had an honest
-weakness, reviewers from the same model family, adversarially prompted. Even
-that weaker setup caught four findings that all survived verification:
+weakness: the reviewers came from the same model family, even though they
+were prompted to refute. Even that weaker setup caught four findings that
+all survived verification:
 
 1. The user-set quality target was not wired to the gate. The gate hardcoded
    its own floor, so a user asking for 9.0 would silently get 8.5. The headline
@@ -139,13 +147,14 @@ added a regression test for exactly that case.
 Then, once the build landed, I closed the same-family weakness: the full
 three-lineage loop ran adversarially on its own machinery. Codex with a
 refute-prompted brief, Gemini with a diverse-lens brief, and my own
-verification pass, pooled and adjudicated by the framework's own math. The
-batch produced twelve claims. Ten were accepted and fixed, and every accepted
-claim was reproduced with a live probe before it earned the verdict. One bug,
-a word-boundary defect in the domain classifier, was flagged independently by
-all three lineages. Two of the accepted claims were rated high: scores like
-"infinity" sailed through the convergence gate as passing, and the routing
-table could assign an engine to review its own work.
+verification pass, pooled and adjudicated by the framework's own math.
+
+The batch produced twelve claims. Ten were accepted and fixed, and every
+accepted claim was reproduced with a live probe before it earned the verdict.
+One bug, a word-boundary defect in the domain classifier, was flagged
+independently by all three lineages. Two of the accepted claims were rated
+high: scores like "infinity" sailed through the convergence gate as passing,
+and the routing table could assign an engine to review its own work.
 
 It gets more recursive. My fixes for those ten claims went through the same
 review, and the reviewer found six more problems in the fixes, three of them
@@ -169,6 +178,8 @@ one caught me four times before it shipped and seventeen more times after it
 landed, six of those in my fixes to the first batch.
 
 ## Principle five: the weights themselves are on trial
+
+That batch is why there is a fifth principle.
 
 The trust weights started as my hand-set guesses, and a framework built on
 "never trust a self-assessment" should not grandfather in its author's
@@ -230,13 +241,14 @@ review pipeline, kept fully backward compatible, with 27 end-to-end tests
 covering both dialects, the fail-closed regression, and the score-validation
 fixes from the cross-lineage review. The weight applier's refusal set has its
 own 12-test oracle. The protocol itself is two specification documents that an
-agent executes, guarded by a 32-test static oracle. The fastest way to verify
+agent executes, guarded by a 30-test static oracle. The fastest way to verify
 the engineering discipline behind all of this is the runnable artifact from
 the same toolchain: a pre-commit gate that blocks secrets and personal data,
-with a 27-case regression harness you can clone and run. The core
-orchestration scripts these live in run about thirty-three thousand lines of
-Python, and the full repository, tests and dashboard generator included, is
-closer to three hundred thousand.
+with a [27-case regression harness you can clone and run](https://github.com/KiwiMaddog2020/trust-weighted-evals).
+The core orchestration scripts these live in, in the private source system,
+run about thirty-three thousand lines of Python, and that full repository,
+tests and dashboard generator included, is closer to three hundred thousand.
+Clone the public extract, run the tests, try to refute it.
 
 None of this is enterprise-scale infrastructure, and I won't pretend it is. It
 is one operator's working system, built in the open hours around a day job, on
